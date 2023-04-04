@@ -2,6 +2,7 @@
 
 #include "tflite_generated.hpp"
 
+#include <filesystem>   // std::filesystem
 #include <memory>       // std::shared_ptr
 #include <type_traits>  // std::is_same_v
 #include <vector>       // std::vector
@@ -24,3 +25,5 @@ PtrType<T> make_ptr(Args&&... args) {
   }
   return std::make_shared<T>(std::forward<Args&&>(args)...);
 }
+
+namespace fs = std::filesystem;

@@ -1,29 +1,30 @@
 #pragma once
-
-#include <cstddef>     // size_t
-#include <filesystem>  // std::filesystem
-#include <fstream>     // std::ifstream std::ios::binary
-#include <utility>     // std::pair std::make_pair
+#include <cassert>        // assert
+#include <cstddef>        // size_t
+#include <fstream>        // std::ifstream std::ios::binary
+#include <functional>     // std::function
+#include <ranges>         // std::cartesian_product
+#include <unordered_map>  // std::unordered_map
+#include <utility>        // std::pair std::make_pair
+#include <vector>         // std::vector
 
 #include "def.h"
 #include "log.h"
 #include "tflite_generated.hpp"
 #include "utility.h"
 
-std::pair<RawDataType, size_t> read_binary_from_path(
-    std::filesystem::path file_path) {
-  file_path = std::filesystem::canonical(file_path);
+std::pair<RawDataType, size_t> read_binary_from_path(fs::path file_path) {
+  file_path = fs::canonical(file_path);
   RawDataType data = nullptr;
   size_t size = 0;
   if (file_path.extension() != ".tflite") {
     log_fatal("File format not correct: {}, but we need .tflite.",
               file_path.extension().string());
-  } else if (!std::filesystem::exists(file_path) ||
-             std::filesystem::is_directory(file_path)) {
+  } else if (!fs::exists(file_path) || fs::is_directory(file_path)) {
     log_fatal("File {} does not exist or is a directory.", file_path.c_str());
   } else {
     std::ifstream input{file_path, std::ios::binary};
-    size = std::filesystem::file_size(file_path);
+    size = fs::file_size(file_path);
     const static size_t mb_in_byte = 1024 * 1024;
     log_info("Opening file {} of {} Bytes ({} MB).",
              file_path.c_str(),
@@ -35,8 +36,7 @@ std::pair<RawDataType, size_t> read_binary_from_path(
   return std::make_pair(data, size);
 }
 
-void save_as_tflite(std::filesystem::path file_path,
-                    const tflite::ModelT& model_table) {
+void save_as_tflite(fs::path file_path, const tflite::ModelT& model_table) {
   if (!file_path.has_extension() || file_path.extension() != ".tflite") {
     file_path.replace_extension(".tflite");
     log_warning(
@@ -52,13 +52,73 @@ void save_as_tflite(std::filesystem::path file_path,
   const uint8_t* saved_data = builder.GetBufferPointer();
   size_t saved_size = builder.GetSize();
 
-  std::filesystem::remove_all(file_path);
+  fs::remove_all(file_path);
 
   std::ofstream output(file_path, std::ios::binary | std::ios::out);
   output.write(reinterpret_cast<const char*>(saved_data), saved_size);
 }
 
-void save_operator(std::filesystem::path save_path,
+void save_summary(const tflite::ModelT& model_table,
+                  fs::path model_name,
+                  fs::path model_folder) {
+  fs::path summary_path = model_folder / model_name.replace_extension(".txt");
+  fs::remove_all(summary_path);
+  std::ofstream os(summary_path);
+
+  os << model_table.subgraphs.size() << std::endl;  // print subgraph numbers
+  for (PtrType<tflite::SubGraphT> subgraph_ptr : model_table.subgraphs) {
+    int n = subgraph_ptr->tensors.size();
+
+    os << n << std::endl;  // print tensor numbers
+    for (PtrType<tflite::TensorT> tensor_ptr : subgraph_ptr->tensors) {
+      os << tensor_ptr->name << std::endl;  // print tensor names
+    }
+
+    std::function<bool(int32_t)> is_invalid_tensor = [&](int32_t x) -> bool {
+      return subgraph_ptr->tensors[x]->shape_signature.empty();
+    };
+
+    std::unordered_map<int, std::vector<int>> adjacency_list;
+    std::set<int> indices_set;
+    for (PtrType<tflite::OperatorT> operator_ptr : subgraph_ptr->operators) {
+      std::vector<int32_t> valid_inputs = operator_ptr->inputs,
+                           valid_outputs = operator_ptr->outputs;
+      std::erase_if(valid_inputs, is_invalid_tensor);
+      std::erase_if(valid_outputs, is_invalid_tensor);
+      for (auto index : valid_inputs) {
+        indices_set.emplace(index);
+      }
+      for (auto index : valid_outputs) {
+        indices_set.emplace(index);
+      }
+      for (auto [input, output] :
+           std::views::cartesian_product(valid_inputs, valid_outputs)) {
+        adjacency_list[input].emplace_back(output);
+      }
+    }
+
+    // print from->tos map
+    os << adjacency_list.size() << std::endl;
+    for (const auto& [from_tensor_index, to_tensor_indices] : adjacency_list) {
+      os << from_tensor_index;
+      for (const auto& to_tensor_index : to_tensor_indices) {
+        os << ' ' << to_tensor_index;
+      }
+      os << std::endl;
+    }
+
+    os << indices_set.size() << std::endl;
+    for (int index : indices_set) {
+      os << index << ' ' << subgraph_ptr->tensors[index]->shape_signature.size() << ' ';
+      for (int tensor_shape_dim : subgraph_ptr->tensors[index]->shape_signature) {
+        os << ' ' << tensor_shape_dim;
+      }
+      os << std::endl;
+    }
+  }
+}
+
+void save_operator(fs::path save_path,
                    const tflite::ModelT& model_table,
                    PtrType<tflite::SubGraphT> subgraph_ptr,
                    PtrType<tflite::OperatorT> op_ptr) {
@@ -134,15 +194,16 @@ void save_operator(std::filesystem::path save_path,
     new_tensor_ptr->buffer = buffer_indices_map[new_tensor_ptr->buffer];
   }
 
-  new_subgraph->inputs = new_op->inputs;
-  std::erase_if(new_subgraph->inputs, [&](int32_t x) -> bool {
+  std::function<bool(int32_t)> is_invalid_tensor = [&](int32_t x) -> bool {
     return new_subgraph->tensors[x]->shape_signature.empty();
-  });
+  };
+
+  new_subgraph->inputs = new_op->inputs;
+  std::erase_if(new_subgraph->inputs, is_invalid_tensor);
 
   new_subgraph->outputs = new_op->outputs;
-  std::erase_if(new_subgraph->outputs, [&](int32_t x) -> bool {
-    return new_subgraph->tensors[x]->shape_signature.empty();
-  });
+  std::erase_if(new_subgraph->outputs, is_invalid_tensor);
+
   new_subgraph->operators = {new_op};
   new_subgraph->name = subgraph_ptr->name;
 
@@ -150,26 +211,26 @@ void save_operator(std::filesystem::path save_path,
 }
 
 void save_operators(const tflite::ModelT& model_table,
-                    const std::filesystem::path& model_name,
-                    std::filesystem::path root_folder) {
-  if (std::filesystem::exists(root_folder) &&
-      !std::filesystem::is_directory(root_folder)) {
+                    fs::path model_name,
+                    fs::path root_folder) {
+  if (fs::exists(root_folder) && !fs::is_directory(root_folder)) {
     log_fatal("{} exists and is not a folder, abort.", root_folder.string());
     return;
   } else {
     log_warning("Creating {} as if it does not exist.", root_folder.string());
-    std::filesystem::create_directories(root_folder);
+    fs::create_directories(root_folder);
   }
 
-  std::filesystem::path model_folder = root_folder / model_name;
-  if (std::filesystem::exists(model_folder) &&
-      !std::filesystem::is_directory(model_folder)) {
+  fs::path model_folder = root_folder / model_name;
+  if (fs::exists(model_folder) && !fs::is_directory(model_folder)) {
     log_fatal("{} exists and is not a folder, abort.", model_folder.string());
   } else {
     log_warning("Cleaning all contents in {}.", model_folder.string());
-    std::filesystem::remove_all(model_folder);
-    std::filesystem::create_directories(model_folder);
+    fs::remove_all(model_folder);
+    fs::create_directories(model_folder);
   }
+
+  save_summary(model_table, model_name, model_folder);
 
   for (size_t subgraph_index = 0, N = model_table.subgraphs.size();
        subgraph_index < N;
@@ -180,7 +241,7 @@ void save_operators(const tflite::ModelT& model_table,
         subgraph_ptr->operators;
     for (size_t operator_index = 0, M = operators.size(); operator_index < M;
          ++operator_index) {
-      std::filesystem::path save_path =
+      fs::path save_path =
           model_folder / (model_name.string()
                               .append("_")
                               .append(std::to_string(subgraph_index))
