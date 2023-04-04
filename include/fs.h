@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cassert>        // assert
 #include <cstddef>        // size_t
 #include <fstream>        // std::ifstream std::ios::binary
@@ -71,49 +72,21 @@ void save_summary(const tflite::ModelT& model_table,
 
     os << n << std::endl;  // print tensor numbers
     for (PtrType<tflite::TensorT> tensor_ptr : subgraph_ptr->tensors) {
-      os << tensor_ptr->name << std::endl;  // print tensor names
+      os << tensor_ptr->name << '\n'
+         << tflite::EnumNameTensorType(tensor_ptr->type) << '\t'
+         << tensor_ptr->buffer << '\t'
+         << model_table.buffers[tensor_ptr->buffer]->data.size() << '\t'
+         << join(tensor_ptr->shape_signature, " ")
+         << std::endl;
     }
 
-    std::function<bool(int32_t)> is_invalid_tensor = [&](int32_t x) -> bool {
-      return subgraph_ptr->tensors[x]->shape_signature.empty();
-    };
-
-    std::unordered_map<int, std::vector<int>> adjacency_list;
-    std::set<int> indices_set;
+    os << subgraph_ptr->operators.size() << std::endl;
     for (PtrType<tflite::OperatorT> operator_ptr : subgraph_ptr->operators) {
       std::vector<int32_t> valid_inputs = operator_ptr->inputs,
                            valid_outputs = operator_ptr->outputs;
-      std::erase_if(valid_inputs, is_invalid_tensor);
-      std::erase_if(valid_outputs, is_invalid_tensor);
-      for (auto index : valid_inputs) {
-        indices_set.emplace(index);
-      }
-      for (auto index : valid_outputs) {
-        indices_set.emplace(index);
-      }
-      for (auto [input, output] :
-           std::views::cartesian_product(valid_inputs, valid_outputs)) {
-        adjacency_list[input].emplace_back(output);
-      }
-    }
-
-    // print from->tos map
-    os << adjacency_list.size() << std::endl;
-    for (const auto& [from_tensor_index, to_tensor_indices] : adjacency_list) {
-      os << from_tensor_index;
-      for (const auto& to_tensor_index : to_tensor_indices) {
-        os << ' ' << to_tensor_index;
-      }
-      os << std::endl;
-    }
-
-    os << indices_set.size() << std::endl;
-    for (int index : indices_set) {
-      os << index << ' ' << subgraph_ptr->tensors[index]->shape_signature.size() << ' ';
-      for (int tensor_shape_dim : subgraph_ptr->tensors[index]->shape_signature) {
-        os << ' ' << tensor_shape_dim;
-      }
-      os << std::endl;
+      os << '#' << std::endl;
+      os << join(valid_inputs, " ") << std::endl;
+      os << join(valid_outputs, " ") << std::endl;
     }
   }
 }
