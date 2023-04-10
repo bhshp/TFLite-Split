@@ -66,6 +66,7 @@ void save_summary(const tflite::ModelT& model_table,
   fs::remove_all(summary_path);
   std::ofstream os(summary_path);
 
+  os << model_name << std::endl;
   os << model_table.subgraphs.size() << std::endl;  // print subgraph numbers
   for (PtrType<tflite::SubGraphT> subgraph_ptr : model_table.subgraphs) {
     int n = subgraph_ptr->tensors.size();
